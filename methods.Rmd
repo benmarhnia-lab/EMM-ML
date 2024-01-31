@@ -1,0 +1,172 @@
+---
+title: "EMM ML Methods"
+author: "Michael Cheung, Anna Dimitrova, Tarik Benmarhnia"
+output:
+  pdf_document: default
+  word_document: default
+---
+
+## Load Required Packages
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(eval=F,
+                      echo=T)
+```
+
+```{r}
+library(tidyverse) # data manipulation, ggplot
+library(grf) # Generalized Random Forests
+library(BART) # Bayesian Additive Regression Trees
+library(bcf) # Bayesian Causal Forests
+library(rpart) # Generate ITE CART
+library(rpart.plot) # Create ITE CART plot
+
+# ----------------------------
+# options(knitr.table.format = "markdown")
+options(kableExtra.auto_format = FALSE)
+```
+
+## Load Data
+
+```{r load data}
+# load data
+data <- read_csv("~/Documents/emm_local/data/data_droughts_malnutrition.csv")
+
+# select outcome, exposure, covariates
+outcome <- "stunted"
+exposure <- "drought"
+y <- dplyr::pull(data, outcome)
+z <- dplyr::pull(data, exposure)
+X <- data %>%
+    dplyr::select(-all_of(c(outcome, exposure)))
+```
+
+## GRF
+
+```{r GRF}
+
+# Set seed to reproduce analysis
+set.seed(1102)
+
+# Run GRF (grf::causal_forest)
+grf_results <- causal_forest(X = X,
+                             Y = y,
+                             W = z)
+
+# Get ITEs 
+grf_ite <- predict(grf_results, estimate.variance = T)
+
+# GRF BLP calibration
+test_calibration(grf_results)
+
+# GRF variable importance
+(grf_varimp <- tibble(variable = names(X),
+                      importance = variable_importance(grf_results)))
+
+# GRF CATEs 
+best_linear_projection(grf_results, A = dplyr::select(data, education_none))
+best_linear_projection(grf_results, A = dplyr::select(data, rural_residence))
+```
+
+## BART
+
+```{r BART}
+
+# Set seed to reproduce analysis
+set.seed(1102)
+
+# Make counterfactuals for BART algorithm to test
+data1 <- data %>%
+    mutate(drought = 1)
+
+data0 <- data %>%
+    mutate(drought = 0)
+
+# Run BART (BART::lbart)
+## Run for exposed
+bart_results1 <- lbart(x.train = as.data.frame(dplyr::select(data, -outcome)),
+                       y.train = dplyr::pull(data, outcome),
+                       x.test = as.data.frame(dplyr::select(data1, -outcome)))
+
+## Run for unexposed
+bart_results0 <- lbart(x.train = as.data.frame(dplyr::select(data, -outcome)),
+                       y.train = dplyr::pull(data, outcome),
+                       x.test = as.data.frame(dplyr::select(data0, -outcome)))
+
+bart_results1$yhat.train.collapse <- apply(bart_results1$yhat.train, 2, rbind)
+bart_results1$yhat.test.collapse <- apply(bart_results1$yhat.test, 2, rbind)
+bart_results0$yhat.train.collapse <- apply(bart_results0$yhat.train, 2, rbind)
+bart_results0$yhat.test.collapse <- apply(bart_results0$yhat.test, 2, rbind)
+
+# ITE estimates
+bart_ite <- exp(colMeans(bart_results1$yhat.test.collapse)) /
+    (1 + exp(colMeans(bart_results1$yhat.test.collapse))) -
+    exp(colMeans(bart_results0$yhat.test.collapse)) /
+    (1 + exp(colMeans(bart_results0$yhat.test.collapse)))
+```
+
+## BCF
+
+```{r BCF}
+
+# Set seed to reproduce analysis
+set.seed(1102)
+
+# Estimate propensity score for BCF
+ps_mod_formula <- as.formula(paste(exposure, paste(names(X), collapse = " + "), sep = "~"))
+ps_mod <- glm(ps_mod_formula,
+              family = binomial,
+              data = data)
+logit_ps <- predict(ps_mod, newdata = data, type = "response")
+
+# Format design matrix for BCF
+X_BCF <- makeModelMatrixFromDataFrame(X)
+
+# Run BCF (bcf::bcf)
+bcf_results <- bcf(y = y,
+                   z = z,
+                   x_control = X_BCF,
+                   pihat = est_ps,
+                   nburn = 500,
+                   nsim = 500)
+
+# ITE estimates
+bcf_ite <- colMeans(bcf_results$tau)
+```
+
+## ITE CARTs
+
+``` {r ITE CARTs}
+
+data <- data %>%
+    mutate(ite_grf = grf_ite$predictions,
+           ite_bart = bart_ite,
+           ite_bcf = bcf_ite)
+
+# CART for GRF ITEs
+grf_cart <- rpart(ite_grf ~ ., 
+                  data = dplyr::select(data, -all_of(c(outcome, exposure, "ite_bart", "ite_bcf"))),
+                  method = "anova", 
+                  maxdepth = 3)
+
+# Plot GRF CART
+prp(grf_cart, box.palette = "auto", extra = "auto", fallen.leaves = T, type = 2, varlen = 0)
+
+# CART for BART ITEs
+bart_cart <- rpart(ite_bart ~ ., 
+                   data = dplyr::select(data, -all_of(c(outcome, exposure, "ite_grf", "ite_bcf"))),
+                   method = "anova", 
+                   maxdepth = 3)
+
+# Plot  CART
+prp(bart_cart, box.palette = "auto", extra = "auto", fallen.leaves = T, type = 2, varlen = 0)
+
+# CART for BCF ITEs
+bcf_cart <- rpart(ite_bcf ~ ., 
+                  data = dplyr::select(data, -all_of(c(outcome, exposure, "ite_grf", "ite_bart"))),
+                  method = "anova", 
+                  maxdepth = 3)
+
+# Plot BCF CART
+prp(bcf_cart, box.palette = "auto", extra = "auto", fallen.leaves = T, type = 2, varlen = 0)
+```
