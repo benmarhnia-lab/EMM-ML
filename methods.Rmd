@@ -18,6 +18,7 @@ library(tidyverse) # data manipulation, ggplot
 library(grf) # Generalized Random Forests
 library(BART) # Bayesian Additive Regression Trees
 library(bcf) # Bayesian Causal Forests
+library(dbarts) # makeModelMatrix function for BCF
 library(rpart) # Generate ITE CART
 library(rpart.plot) # Create ITE CART plot
 
@@ -120,15 +121,15 @@ ps_mod <- glm(ps_mod_formula,
 logit_ps <- predict(ps_mod, newdata = data, type = "response")
 
 # Format design matrix for BCF
-X_BCF <- makeModelMatrixFromDataFrame(X)
+X_BCF <- dbarts::makeModelMatrixFromDataFrame(X)
 
 # Run BCF (bcf::bcf)
 bcf_results <- bcf(y = y,
                    z = z,
                    x_control = X_BCF,
-                   pihat = est_ps,
-                   nburn = 500,
-                   nsim = 500)
+                   pihat = logit_ps,
+                   nburn = 1000,
+                   nsim = 1000)
 
 # ITE estimates
 bcf_ite <- colMeans(bcf_results$tau)
