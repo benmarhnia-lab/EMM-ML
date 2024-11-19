@@ -19,8 +19,8 @@ library(grf) # Generalized Random Forests
 library(BART) # Bayesian Additive Regression Trees
 library(bcf) # Bayesian Causal Forests
 library(dbarts) # makeModelMatrix function for BCF
-library(rpart) # Generate ITE CART
-library(rpart.plot) # Create ITE CART plot
+library(rpart) # Fit-the-fit CART
+library(rpart.plot) # Generate fit-the-fit CART plot
 
 # ----------------------------
 # options(knitr.table.format = "markdown")
@@ -31,7 +31,7 @@ options(kableExtra.auto_format = FALSE)
 
 ```{r load data}
 # load data
-data <- read_csv("~/Documents/emm_local/data/data_droughts_malnutrition.csv")
+data <- read_csv("data_droughts_malnutrition.csv")
 
 # select outcome, exposure, covariates
 outcome <- "stunted"
@@ -49,24 +49,31 @@ X <- data %>%
 # Set seed to reproduce analysis
 set.seed(1102)
 
-# Run GRF (grf::causal_forest)
-grf_results <- causal_forest(X = X,
-                             Y = y,
-                             W = z)
+# Assign folds for cross-fitting (as recommended by Athey, Tibshirani, Wager 2019 and Shiba, Inoue 2024)
+n_folds <- 10
+folds <- sample(seq(n_folds), 
+                replace = T, 
+                size = nrow(data))
 
-# Get ITEs 
-grf_ite <- predict(grf_results, estimate.variance = T)
+# Run GRF (grf::causal_forest)
+grf <- causal_forest(X = X,
+                     Y = y,
+                     W = z,
+                     clusters = folds)
+
+# Get CATEs 
+grf_cate <- predict(grf, estimate.variance = T)
 
 # GRF BLP calibration
-test_calibration(grf_results)
+test_calibration(grf)
 
 # GRF variable importance
 (grf_varimp <- tibble(variable = names(X),
-                      importance = variable_importance(grf_results)))
+                      importance = variable_importance(grf)))
 
 # GRF CATEs 
-best_linear_projection(grf_results, A = dplyr::select(data, education_none))
-best_linear_projection(grf_results, A = dplyr::select(data, rural_residence))
+best_linear_projection(grf, A = dplyr::select(data, education_none))
+best_linear_projection(grf, A = dplyr::select(data, rural_residence))
 ```
 
 ## BART
@@ -99,8 +106,8 @@ bart_results1$yhat.test.collapse <- apply(bart_results1$yhat.test, 2, rbind)
 bart_results0$yhat.train.collapse <- apply(bart_results0$yhat.train, 2, rbind)
 bart_results0$yhat.test.collapse <- apply(bart_results0$yhat.test, 2, rbind)
 
-# ITE estimates
-bart_ite <- exp(colMeans(bart_results1$yhat.test.collapse)) /
+# CATE estimates
+bart_cate <- exp(colMeans(bart_results1$yhat.test.collapse)) /
     (1 + exp(colMeans(bart_results1$yhat.test.collapse))) -
     exp(colMeans(bart_results0$yhat.test.collapse)) /
     (1 + exp(colMeans(bart_results0$yhat.test.collapse)))
@@ -124,47 +131,47 @@ logit_ps <- predict(ps_mod, newdata = data, type = "response")
 X_BCF <- dbarts::makeModelMatrixFromDataFrame(X)
 
 # Run BCF (bcf::bcf)
-bcf_results <- bcf(y = y,
-                   z = z,
-                   x_control = X_BCF,
-                   pihat = logit_ps,
-                   nburn = 1000,
-                   nsim = 1000)
+bcf <- bcf(y = y,
+           z = z,
+           x_control = X_BCF,
+           pihat = logit_ps,
+           nburn = 1000,
+           nsim = 1000)
 
-# ITE estimates
-bcf_ite <- colMeans(bcf_results$tau)
+# CATE estimates
+bcf_cate <- colMeans(bcfs$tau)
 ```
 
-## ITE CARTs
+## Fit-the-Fit CARTs
 
-``` {r ITE CARTs}
+``` {r Fit-the-Fit CARTs}
 
 data <- data %>%
-    mutate(ite_grf = grf_ite$predictions,
-           ite_bart = bart_ite,
-           ite_bcf = bcf_ite)
+    mutate(cate_grf = grf_cate$predictions,
+           cate_bart = bart_cate,
+           cate_bcf = bcf_cate)
 
-# CART for GRF ITEs
-grf_cart <- rpart(ite_grf ~ ., 
-                  data = dplyr::select(data, -all_of(c(outcome, exposure, "ite_bart", "ite_bcf"))),
+# CART for GRF CATEs
+grf_cart <- rpart(cate_grf ~ ., 
+                  data = dplyr::select(data, -all_of(c(outcome, exposure, "cate_bart", "cate_bcf"))),
                   method = "anova", 
                   maxdepth = 3)
 
 # Plot GRF CART
 prp(grf_cart, box.palette = "auto", extra = "auto", fallen.leaves = T, type = 2, varlen = 0)
 
-# CART for BART ITEs
-bart_cart <- rpart(ite_bart ~ ., 
-                   data = dplyr::select(data, -all_of(c(outcome, exposure, "ite_grf", "ite_bcf"))),
+# CART for BART CATEs
+bart_cart <- rpart(cate_bart ~ ., 
+                   data = dplyr::select(data, -all_of(c(outcome, exposure, "cate_grf", "cate_bcf"))),
                    method = "anova", 
                    maxdepth = 3)
 
 # Plot  CART
 prp(bart_cart, box.palette = "auto", extra = "auto", fallen.leaves = T, type = 2, varlen = 0)
 
-# CART for BCF ITEs
-bcf_cart <- rpart(ite_bcf ~ ., 
-                  data = dplyr::select(data, -all_of(c(outcome, exposure, "ite_grf", "ite_bart"))),
+# CART for BCF CATEs
+bcf_cart <- rpart(cate_bcf ~ ., 
+                  data = dplyr::select(data, -all_of(c(outcome, exposure, "cate_grf", "cate_bart"))),
                   method = "anova", 
                   maxdepth = 3)
 
