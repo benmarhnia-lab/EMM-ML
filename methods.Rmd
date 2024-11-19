@@ -2,8 +2,8 @@
 title: "EMM ML Methods"
 author: "Michael Cheung, Anna Dimitrova, Tarik Benmarhnia"
 output:
-  pdf_document: default
   word_document: default
+  pdf_document: default
 ---
 
 ## Load Required Packages
@@ -101,16 +101,14 @@ bart_results0 <- lbart(x.train = as.data.frame(dplyr::select(data, -outcome)),
                        y.train = dplyr::pull(data, outcome),
                        x.test = as.data.frame(dplyr::select(data0, -outcome)))
 
-bart_results1$yhat.train.collapse <- apply(bart_results1$yhat.train, 2, rbind)
-bart_results1$yhat.test.collapse <- apply(bart_results1$yhat.test, 2, rbind)
-bart_results0$yhat.train.collapse <- apply(bart_results0$yhat.train, 2, rbind)
-bart_results0$yhat.test.collapse <- apply(bart_results0$yhat.test, 2, rbind)
+bart_results1_lp <- colMeans(bart_results1$yhat.test)
+bart_results0_lp <- colMeans(bart_results0$yhat.test)
 
 # CATE estimates
-bart_cate <- exp(colMeans(bart_results1$yhat.test.collapse)) /
-    (1 + exp(colMeans(bart_results1$yhat.test.collapse))) -
-    exp(colMeans(bart_results0$yhat.test.collapse)) /
-    (1 + exp(colMeans(bart_results0$yhat.test.collapse)))
+bart_cate <- exp(bart_results1_lp) /
+    (1 + exp(bart_results1_lp)) -
+    exp(bart_results0_lp) /
+    (1 + exp(bart_results0_lp))
 ```
 
 ## BCF
